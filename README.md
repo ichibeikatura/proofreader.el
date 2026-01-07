@@ -18,7 +18,7 @@ Gemini CLI を使った日本語テキスト校正ワークフローを Emacs �
   :bind (("C-c p s" . proofreader-send-buffer)
          ("C-c p i" . proofreader-apply-interactive)
          ("C-c p r" . proofreader-send-region)
-         ("C-c p o" . proofreader-open-json)))
+         ("C-c p o" . proofreader-open-json)
          ("C-c p a" . proofreader-apply)))
 ```
 

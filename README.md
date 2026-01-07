@@ -14,7 +14,7 @@ Gemini CLI を使った日本語テキスト校正ワークフローを Emacs �
 ```elisp
 (use-package proofreader
   :ensure (proofreader
-           :url "https://github.com/ichibeikatura/proofreader")
+           :url "https://github.com/ichibeikatura/proofreader.el")
   :bind (("C-c p s" . proofreader-send-buffer)
          ("C-c p i" . proofreader-apply-interactive)
          ("C-c p r" . proofreader-send-region)

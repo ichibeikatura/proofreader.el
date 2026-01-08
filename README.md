@@ -6,6 +6,7 @@ Gemini CLI を使った日本語テキスト校正ワークフローを Emacs �
 
 - Emacs 27.1+
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- Elpaca
 
 ## インストール
 

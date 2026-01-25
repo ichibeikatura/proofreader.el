@@ -87,6 +87,9 @@ JSONのみを出力してください。説明文や```json```マークダウン
 (defvar proofreader--json-path nil
   "Path to output JSON file.")
 
+(defvar proofreader--stderr-buffer nil
+  "Buffer for Gemini stderr output.")
+
 (defun proofreader--get-json-path ()
   "Get path for replacements.json in current buffer's directory."
   (let ((dir (or (and buffer-file-name
@@ -103,11 +106,10 @@ JSONのみを出力してください。説明文や```json```マークダウン
   (with-temp-buffer
     (insert output)
     (goto-char (point-min))
-    ;; Skip any leading text until we find [
+    ;; Find opening bracket of JSON array
     (when (re-search-forward "\\[" nil t)
       (goto-char (match-beginning 0))
       (let ((start (point)))
-        ;; Find matching ]
         (condition-case nil
             (progn
               (forward-sexp)
@@ -152,13 +154,17 @@ JSONのみを出力してください。説明文や```json```マークダウン
     (setq proofreader--source-buffer (current-buffer))
     (setq proofreader--json-path (proofreader--get-json-path))
     (setq proofreader--output-buffer (get-buffer-create "*proofreader-output*"))
+    (setq proofreader--stderr-buffer (get-buffer-create "*proofreader-stderr*"))
     (with-current-buffer proofreader--output-buffer
+      (erase-buffer))
+    (with-current-buffer proofreader--stderr-buffer
       (erase-buffer))
     (message "Geminiに送信中...")
     (setq proofreader--process
           (make-process
            :name "proofreader"
            :buffer proofreader--output-buffer
+           :stderr proofreader--stderr-buffer
            :command (list proofreader-gemini-command
                           "-m" proofreader-gemini-model
                           "-o" "text")
@@ -179,13 +185,17 @@ JSONのみを出力してください。説明文や```json```マークダウン
     (setq proofreader--source-buffer (current-buffer))
     (setq proofreader--json-path (proofreader--get-json-path))
     (setq proofreader--output-buffer (get-buffer-create "*proofreader-output*"))
+    (setq proofreader--stderr-buffer (get-buffer-create "*proofreader-stderr*"))
     (with-current-buffer proofreader--output-buffer
+      (erase-buffer))
+    (with-current-buffer proofreader--stderr-buffer
       (erase-buffer))
     (message "Geminiに送信中...")
     (setq proofreader--process
           (make-process
            :name "proofreader"
            :buffer proofreader--output-buffer
+           :stderr proofreader--stderr-buffer
            :command (list proofreader-gemini-command
                           "-m" proofreader-gemini-model
                           "-o" "text")

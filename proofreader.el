@@ -1,8 +1,8 @@
-;;; proofreader.el --- Proofreading workflow with Gemini CLI -*- lexical-binding: t; -*-
+;;; proofreader.el --- Proofreading workflow with Antigravity CLI (agy) -*- lexical-binding: t; -*-
 
 ;; Author: ichibeikatura
 ;; URL: https://github.com/ichibeikatura/proofreader
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: tools, writing, proofreading
 
@@ -10,33 +10,42 @@
 
 ;;; Commentary:
 
-;; Emacs package for Japanese text proofreading using Gemini CLI.
-;; 
+;; Emacs package for Japanese text proofreading using the Antigravity CLI (agy).
+;;
 ;; Usage:
-;;   1. M-x proofreader-send-buffer  - Send buffer to Gemini CLI
+;;   1. M-x proofreader-send-buffer  - Send buffer to agy
 ;;   2. Edit generated replacements.json as needed
 ;;   3. M-x proofreader-apply        - Apply replacements from JSON
 ;;
 ;; Configuration:
-;;   (setq proofreader-gemini-model "gemini-2.5-pro")
+;;   (setq proofreader-model "gemini-2.5-pro")
 ;;   (setq proofreader-json-filename "replacements.json")
+;;
+;; Note: the former Gemini CLI was retired for individual use on 2026-06-18.
+;; This package now drives its successor, the Antigravity CLI (command `agy`),
+;; via your Gemini AI Pro OAuth login.
 
 ;;; Code:
 
 (require 'json)
+(require 'cl-lib)
 
 (defgroup proofreader nil
-  "Proofreading with Gemini CLI."
+  "Proofreading with the Antigravity CLI (agy)."
   :group 'tools
   :prefix "proofreader-")
 
-(defcustom proofreader-gemini-command "gemini"
-  "Command to invoke Gemini CLI."
+(defcustom proofreader-command "agy"
+  "Command to invoke the Antigravity CLI.
+If Emacs cannot find it on `exec-path' (e.g. when launched from the GUI),
+set this to an absolute path or fix `exec-path' (e.g. exec-path-from-shell)."
   :type 'string
   :group 'proofreader)
 
-(defcustom proofreader-gemini-model "gemini-2.5-pro"
-  "Gemini model to use."
+(defcustom proofreader-model "gemini-2.5-pro"
+  "Model to use with agy.
+Confirm the exact model name available to your account with `agy models';
+the model-name namespace may differ from the old Gemini CLI."
   :type 'string
   :group 'proofreader)
 
@@ -59,10 +68,12 @@
 - Markdown形式の引用文（> で始まる行）
 - 固有名詞、史実・時代背景に関する記述
 - 文体・語彙・表現スタイル
+- 漢字を無理にひながなにしない
 - 意図的かどうか判断できないもの
 
 ## 原則
 疑わしいときは修正しない。原文の語句を別の語句に置き換えることは禁止。
+修正の数は評価対象とならない。正確性と慎重さを重視する。
 
 ## 出力形式
 JSONのみを出力してください。説明文や```json```マークダウンは不要です。
@@ -82,10 +93,10 @@ JSONのみを出力してください。説明文や```json```マークダウン
   :group 'proofreader)
 
 (defvar proofreader--process nil
-  "Current Gemini process.")
+  "Current agy process.")
 
 (defvar proofreader--output-buffer nil
-  "Buffer for Gemini output.")
+  "Buffer for agy stdout.")
 
 (defvar proofreader--source-buffer nil
   "Source buffer being proofread.")
@@ -94,7 +105,7 @@ JSONのみを出力してください。説明文や```json```マークダウン
   "Path to output JSON file.")
 
 (defvar proofreader--stderr-buffer nil
-  "Buffer for Gemini stderr output.")
+  "Buffer for agy stderr output.")
 
 (defun proofreader--get-json-path ()
   "Get path for replacements.json in current buffer's directory."
@@ -108,19 +119,28 @@ JSONのみを出力してください。説明文や```json```マークダウン
   (format proofreader-prompt-template text))
 
 (defun proofreader--extract-json (output)
-  "Extract JSON array from OUTPUT string."
-  (with-temp-buffer
-    (insert output)
-    (goto-char (point-min))
-    ;; Find opening bracket of JSON array
-    (when (re-search-forward "\\[" nil t)
-      (goto-char (match-beginning 0))
-      (let ((start (point)))
-        (condition-case nil
-            (progn
-              (forward-sexp)
-              (buffer-substring-no-properties start (point)))
-          (error nil))))))
+  "Extract the first valid JSON array from OUTPUT.
+Tolerates surrounding text, agent chrome, and Markdown code fences that
+agy may emit around the JSON.  Returns the JSON substring, or nil."
+  (let ((text (replace-regexp-in-string "```\\(?:json\\)?" "" output)))
+    (with-temp-buffer
+      (insert text)
+      (goto-char (point-min))
+      (let ((result nil))
+        ;; Scan each '[' and accept the first span that parses as a JSON array.
+        (while (and (not result)
+                    (re-search-forward "\\[" nil t))
+          (let ((bracket (match-beginning 0)))
+            (goto-char bracket)
+            (condition-case nil
+                (let ((val (json-parse-buffer :array-type 'array)))
+                  (when (arrayp val)
+                    (setq result
+                          (buffer-substring-no-properties bracket (point)))))
+              (error
+               ;; Not valid JSON here; resume searching past this bracket.
+               (goto-char (1+ bracket))))))
+        result))))
 
 (defun proofreader--process-sentinel (proc event)
   "Process sentinel for PROC with EVENT."
@@ -130,7 +150,7 @@ JSONのみを出力してください。説明文や```json```マークダウン
       (proofreader--handle-error event))))
 
 (defun proofreader--handle-success ()
-  "Handle successful Gemini response."
+  "Handle successful agy response."
   (let* ((output (with-current-buffer proofreader--output-buffer
                    (buffer-string)))
          (json-str (proofreader--extract-json output)))
@@ -144,74 +164,55 @@ JSONのみを出力してください。説明文や```json```マークダウン
       (switch-to-buffer-other-window proofreader--output-buffer))))
 
 (defun proofreader--handle-error (event)
-  "Handle Gemini error with EVENT."
-  (message "Gemini CLIエラー: %s" event)
+  "Handle agy error with EVENT."
+  (message "agy エラー: %s" event)
   (switch-to-buffer-other-window proofreader--output-buffer))
+
+(defun proofreader--start (prompt)
+  "Start the agy process with PROMPT, capturing stdout for JSON extraction.
+PROMPT is passed as a command-line argument: agy reads its prompt from the
+argument, not from stdin."
+  (when (and proofreader--process
+             (process-live-p proofreader--process))
+    (user-error "既に校正処理が実行中です"))
+  (setq proofreader--source-buffer (current-buffer))
+  (setq proofreader--json-path (proofreader--get-json-path))
+  (setq proofreader--output-buffer (get-buffer-create "*proofreader-output*"))
+  (setq proofreader--stderr-buffer (get-buffer-create "*proofreader-stderr*"))
+  (with-current-buffer proofreader--output-buffer
+    (erase-buffer))
+  (with-current-buffer proofreader--stderr-buffer
+    (erase-buffer))
+  (message "agy に送信中...")
+  (setq proofreader--process
+        (make-process
+         :name "proofreader"
+         :buffer proofreader--output-buffer
+         :stderr proofreader--stderr-buffer
+         :command (list proofreader-command
+                        "--model" proofreader-model
+                        "-p" prompt)
+         :connection-type 'pipe
+         :sentinel #'proofreader--process-sentinel)))
 
 ;;;###autoload
 (defun proofreader-send-buffer ()
-  "Send current buffer to Gemini CLI for proofreading."
+  "Send current buffer to agy for proofreading."
   (interactive)
-  (when (and proofreader--process
-             (process-live-p proofreader--process))
-    (user-error "既に校正処理が実行中です"))
   (let* ((text (buffer-substring-no-properties (point-min) (point-max)))
          (prompt (proofreader--build-prompt text)))
-    (setq proofreader--source-buffer (current-buffer))
-    (setq proofreader--json-path (proofreader--get-json-path))
-    (setq proofreader--output-buffer (get-buffer-create "*proofreader-output*"))
-    (setq proofreader--stderr-buffer (get-buffer-create "*proofreader-stderr*"))
-    (with-current-buffer proofreader--output-buffer
-      (erase-buffer))
-    (with-current-buffer proofreader--stderr-buffer
-      (erase-buffer))
-    (message "Geminiに送信中...")
-    (setq proofreader--process
-          (make-process
-           :name "proofreader"
-           :buffer proofreader--output-buffer
-           :stderr proofreader--stderr-buffer
-           :command (list proofreader-gemini-command
-                          "-m" proofreader-gemini-model
-                          "-o" "text")
-           :connection-type 'pipe
-           :sentinel #'proofreader--process-sentinel))
-    (process-send-string proofreader--process prompt)
-    (process-send-eof proofreader--process)))
+    (proofreader--start prompt)))
 
 ;;;###autoload
 (defun proofreader-send-region (start end)
-  "Send region from START to END to Gemini CLI for proofreading."
+  "Send region from START to END to agy for proofreading."
   (interactive "r")
-  (when (and proofreader--process
-             (process-live-p proofreader--process))
-    (user-error "既に校正処理が実行中です"))
   (let* ((text (buffer-substring-no-properties start end))
          (prompt (proofreader--build-prompt text)))
-    (setq proofreader--source-buffer (current-buffer))
-    (setq proofreader--json-path (proofreader--get-json-path))
-    (setq proofreader--output-buffer (get-buffer-create "*proofreader-output*"))
-    (setq proofreader--stderr-buffer (get-buffer-create "*proofreader-stderr*"))
-    (with-current-buffer proofreader--output-buffer
-      (erase-buffer))
-    (with-current-buffer proofreader--stderr-buffer
-      (erase-buffer))
-    (message "Geminiに送信中...")
-    (setq proofreader--process
-          (make-process
-           :name "proofreader"
-           :buffer proofreader--output-buffer
-           :stderr proofreader--stderr-buffer
-           :command (list proofreader-gemini-command
-                          "-m" proofreader-gemini-model
-                          "-o" "text")
-           :connection-type 'pipe
-           :sentinel #'proofreader--process-sentinel))
-    (process-send-string proofreader--process prompt)
-    (process-send-eof proofreader--process)))
+    (proofreader--start prompt)))
 
 ;;;###autoload
-(defun proofreader-apply ()
+(cl-defun proofreader-apply ()
   "Apply replacements from JSON file to source buffer."
   (interactive)
   (let ((json-path (proofreader--get-json-path)))
@@ -242,7 +243,7 @@ JSONのみを出力してください。説明文や```json```マークダウン
         (message "完了: %d件の置換を適用" count)))))
 
 ;;;###autoload
-(defun proofreader-apply-interactive ()
+(cl-defun proofreader-apply-interactive ()
   "Apply replacements interactively, confirming each one."
   (interactive)
   (let ((json-path (proofreader--get-json-path)))

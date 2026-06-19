@@ -18,7 +18,7 @@
 ;;   3. M-x proofreader-apply        - Apply replacements from JSON
 ;;
 ;; Configuration:
-;;   (setq proofreader-model "gemini-2.5-pro")
+;;   (setq proofreader-model "Gemini 3.5 Flash (Medium)")
 ;;   (setq proofreader-json-filename "replacements.json")
 ;;
 ;; Note: the former Gemini CLI was retired for individual use on 2026-06-18.
@@ -42,10 +42,11 @@ set this to an absolute path or fix `exec-path' (e.g. exec-path-from-shell)."
   :type 'string
   :group 'proofreader)
 
-(defcustom proofreader-model "gemini-2.5-pro"
+(defcustom proofreader-model "Gemini 3.5 Flash (Medium)"
   "Model to use with agy.
-Confirm the exact model name available to your account with `agy models';
-the model-name namespace may differ from the old Gemini CLI."
+This must match a name listed by `agy models' verbatim (including spaces
+and the parenthesized thinking level), since it is passed straight to
+`agy --model'."
   :type 'string
   :group 'proofreader)
 

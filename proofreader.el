@@ -171,8 +171,10 @@ agy may emit around the JSON.  Returns the JSON substring, or nil."
 
 (defun proofreader--start (prompt)
   "Start the agy process with PROMPT, capturing stdout for JSON extraction.
-PROMPT is passed as a command-line argument: agy reads its prompt from the
-argument, not from stdin."
+PROMPT is passed as a command-line argument, but agy still waits for stdin to
+reach EOF before it prints and exits, even in print (-p) mode.  Since Emacs
+keeps the process stdin open as a pipe, we must close it explicitly with
+`process-send-eof', otherwise agy hangs with no output."
   (when (and proofreader--process
              (process-live-p proofreader--process))
     (user-error "既に校正処理が実行中です"))
@@ -194,7 +196,9 @@ argument, not from stdin."
                         "--model" proofreader-model
                         "-p" prompt)
          :connection-type 'pipe
-         :sentinel #'proofreader--process-sentinel)))
+         :sentinel #'proofreader--process-sentinel))
+  ;; agy waits for stdin EOF before printing; close it so it doesn't hang.
+  (process-send-eof proofreader--process))
 
 ;;;###autoload
 (defun proofreader-send-buffer ()

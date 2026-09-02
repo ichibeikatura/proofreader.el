@@ -18,7 +18,7 @@
 ;;   3. M-x proofreader-apply        - Apply replacements from JSON
 ;;
 ;; Configuration:
-;;   (setq proofreader-model "Gemini 3.5 Flash (Medium)")
+;;   (setq proofreader-model "Gemini 3.7 Flash (Medium)")
 ;;   (setq proofreader-json-filename "replacements.json")
 ;;
 ;; Note: the former Gemini CLI was retired for individual use on 2026-06-18.
@@ -29,6 +29,8 @@
 
 (require 'json)
 (require 'cl-lib)
+(require 'seq)
+(require 'subr-x)
 
 (defgroup proofreader nil
   "Proofreading with the Antigravity CLI (agy)."
@@ -42,7 +44,7 @@ set this to an absolute path or fix `exec-path' (e.g. exec-path-from-shell)."
   :type 'string
   :group 'proofreader)
 
-(defcustom proofreader-model "Gemini 3.5 Flash (Medium)"
+(defcustom proofreader-model "Gemini 3.7 Flash (Medium)"
   "Model to use with agy.
 This must match a name listed by `agy models' verbatim (including spaces
 and the parenthesized thinking level), since it is passed straight to
@@ -108,6 +110,12 @@ JSONのみを出力してください。説明文や```json```マークダウン
 (defvar proofreader--stderr-buffer nil
   "Buffer for agy stderr output.")
 
+(defvar proofreader--prompt nil
+  "Prompt of the current run, kept so it can be retried.")
+
+(defvar proofreader--retried nil
+  "Non-nil once the current run has been retried with a fallback model.")
+
 (defun proofreader--get-json-path ()
   "Get path for replacements.json in current buffer's directory."
   (let ((dir (or (and buffer-file-name
@@ -143,6 +151,87 @@ agy may emit around the JSON.  Returns the JSON substring, or nil."
                (goto-char (1+ bracket))))))
         result))))
 
+(defun proofreader--list-models ()
+  "Return the models `agy models' reports, as an alist of (SLUG . DISPLAY).
+Returns nil when the command fails or prints nothing usable."
+  (with-temp-buffer
+    (when (eq 0 (call-process proofreader-command nil (list t nil) nil "models"))
+      (goto-char (point-min))
+      (let (models)
+        (while (not (eobp))
+          (let ((line (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            ;; Each entry is "slug<TAB>Display Name"; other chatter has no tab.
+            (when (string-match "\\`\\([^\t]+\\)\t\\(.+\\)\\'" line)
+              (push (cons (match-string 1 line) (match-string 2 line)) models)))
+          (forward-line 1))
+        (nreverse models)))))
+
+(defun proofreader--model-parts (name)
+  "Split model NAME into a list (WORDS VERSION LEVEL).
+For \"Gemini 3.7 Flash (Medium)\" that is ((\"Gemini\" \"Flash\") \"3.7\" \"Medium\")."
+  (let* ((level (when (string-match "(\\([^()]+\\))[ \t]*\\'" name)
+                  (match-string 1 name)))
+         (base (if level (substring name 0 (match-beginning 0)) name))
+         (tokens (split-string base "[ \t]+" t))
+         (numberp (lambda (tk) (string-match-p "\\`[0-9][0-9.]*\\'" tk))))
+    (list (seq-remove numberp tokens)
+          (seq-find numberp tokens)
+          level)))
+
+(defun proofreader--version-lessp (a b)
+  "Return non-nil if version string A sorts before B, treating nil as lowest."
+  (cond ((null b) nil)
+        ((null a) t)
+        (t (ignore-errors (version< a b)))))
+
+(defun proofreader--pick-fallback-model (desired models)
+  "Pick the entry of MODELS closest to DESIRED, or nil if nothing matches.
+MODELS is an alist of (SLUG . DISPLAY).  A candidate qualifies when it
+contains every non-numeric word of DESIRED (so \"Gemini ... Flash\" only
+matches other Gemini Flash models); among those the same thinking level
+wins first, then the highest version number."
+  (pcase-let ((`(,words ,_version ,level) (proofreader--model-parts desired)))
+    (let (best best-version best-score)
+      (dolist (model models)
+        (pcase-let ((`(,cand-words ,cand-version ,cand-level)
+                     (proofreader--model-parts (cdr model))))
+          (when (cl-subsetp words cand-words :test #'string-equal)
+            (let ((score (if (equal level cand-level) 1 0)))
+              (when (or (null best)
+                        (> score best-score)
+                        (and (= score best-score)
+                             (proofreader--version-lessp best-version cand-version)))
+                (setq best model
+                      best-version cand-version
+                      best-score score))))))
+      best)))
+
+(defun proofreader--retry-with-fallback ()
+  "Re-run the current prompt after agy rejected `proofreader-model'.
+Switches to the closest model `agy models' offers, or drops --model
+altogether so agy uses its own default."
+  (setq proofreader--retried t)
+  (let* ((stale proofreader-model)
+         (models (proofreader--list-models))
+         (pick (and models (proofreader--pick-fallback-model stale models)))
+         (prompt proofreader--prompt))
+    ;; The sentinel runs in an arbitrary buffer; restore the source buffer so
+    ;; the retry writes its JSON next to the text being proofread.
+    (with-current-buffer (if (buffer-live-p proofreader--source-buffer)
+                             proofreader--source-buffer
+                           (current-buffer))
+      (cond
+       (pick
+        (setq proofreader-model (cdr pick))
+        (message "モデル「%s」は使えません。「%s」で再試行します (この設定は今回のみ。M-x proofreader-select-model で保存できます)"
+                 stale proofreader-model)
+        (proofreader--start prompt))
+       (t
+        (message "モデル「%s」は使えません。モデル指定なしで再試行します (M-x proofreader-select-model で選び直せます)"
+                 stale)
+        (proofreader--start prompt 'no-model))))))
+
 (defun proofreader--process-sentinel (proc event)
   "Process sentinel for PROC with EVENT."
   (when (memq (process-status proc) '(exit signal))
@@ -165,12 +254,29 @@ agy may emit around the JSON.  Returns the JSON substring, or nil."
       (switch-to-buffer-other-window proofreader--output-buffer))))
 
 (defun proofreader--handle-error (event)
-  "Handle agy error with EVENT."
-  (message "agy エラー: %s" event)
-  (switch-to-buffer-other-window proofreader--output-buffer))
+  "Handle agy error with EVENT.
+agy reports startup failures (unknown model, auth, etc.) on stderr and
+leaves stdout empty, so show stderr when there is anything there."
+  (let ((stderr (and (buffer-live-p proofreader--stderr-buffer)
+                     (with-current-buffer proofreader--stderr-buffer
+                       (buffer-string)))))
+    (cond
+     ;; agy retires model names over time; recover instead of failing.
+     ((and (not proofreader--retried)
+           stderr
+           (string-match-p "invalid model selection" stderr)
+           proofreader--prompt)
+      (proofreader--retry-with-fallback))
+     ((and stderr (not (string-empty-p (string-trim stderr))))
+      (message "agy エラー: %s\n%s" (string-trim event) (string-trim stderr))
+      (switch-to-buffer-other-window proofreader--stderr-buffer))
+     (t
+      (message "agy エラー: %s" event)
+      (switch-to-buffer-other-window proofreader--output-buffer)))))
 
-(defun proofreader--start (prompt)
+(defun proofreader--start (prompt &optional no-model)
   "Start the agy process with PROMPT, capturing stdout for JSON extraction.
+With NO-MODEL non-nil, omit --model so agy falls back to its own default.
 PROMPT is passed as a command-line argument, but agy still waits for stdin to
 reach EOF before it prints and exits, even in print (-p) mode.  Since Emacs
 keeps the process stdin open as a pipe, we must close it explicitly with
@@ -179,6 +285,7 @@ keeps the process stdin open as a pipe, we must close it explicitly with
              (process-live-p proofreader--process))
     (user-error "既に校正処理が実行中です"))
   (setq proofreader--source-buffer (current-buffer))
+  (setq proofreader--prompt prompt)
   (setq proofreader--json-path (proofreader--get-json-path))
   (setq proofreader--output-buffer (get-buffer-create "*proofreader-output*"))
   (setq proofreader--stderr-buffer (get-buffer-create "*proofreader-stderr*"))
@@ -192,9 +299,10 @@ keeps the process stdin open as a pipe, we must close it explicitly with
          :name "proofreader"
          :buffer proofreader--output-buffer
          :stderr proofreader--stderr-buffer
-         :command (list proofreader-command
-                        "--model" proofreader-model
-                        "-p" prompt)
+         :command (append (list proofreader-command)
+                          (unless no-model
+                            (list "--model" proofreader-model))
+                          (list "-p" prompt))
          :connection-type 'pipe
          :sentinel #'proofreader--process-sentinel))
   ;; agy waits for stdin EOF before printing; close it so it doesn't hang.
@@ -204,6 +312,7 @@ keeps the process stdin open as a pipe, we must close it explicitly with
 (defun proofreader-send-buffer ()
   "Send current buffer to agy for proofreading."
   (interactive)
+  (setq proofreader--retried nil)
   (let* ((text (buffer-substring-no-properties (point-min) (point-max)))
          (prompt (proofreader--build-prompt text)))
     (proofreader--start prompt)))
@@ -212,6 +321,7 @@ keeps the process stdin open as a pipe, we must close it explicitly with
 (defun proofreader-send-region (start end)
   "Send region from START to END to agy for proofreading."
   (interactive "r")
+  (setq proofreader--retried nil)
   (let* ((text (buffer-substring-no-properties start end))
          (prompt (proofreader--build-prompt text)))
     (proofreader--start prompt)))
@@ -287,6 +397,20 @@ keeps the process stdin open as a pipe, we must close it explicitly with
     (if (file-exists-p json-path)
         (find-file json-path)
       (user-error "%s が見つかりません" json-path))))
+
+;;;###autoload
+(defun proofreader-select-model ()
+  "Set `proofreader-model' by picking from what `agy models' reports.
+The choice is saved through Customize, so it survives restarts."
+  (interactive)
+  (let ((models (proofreader--list-models)))
+    (unless models
+      (user-error "`%s models' からモデル一覧を取得できませんでした" proofreader-command))
+    (let ((choice (completing-read
+                   (format "モデル (現在: %s): " proofreader-model)
+                   (mapcar #'cdr models) nil t)))
+      (customize-save-variable 'proofreader-model choice)
+      (message "モデルを「%s」に設定し保存しました" choice))))
 
 ;;;###autoload
 (defun proofreader-cancel ()

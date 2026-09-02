@@ -51,12 +51,14 @@ Gemini CLI を使った日本語テキスト校正ワークフローを Emacs �
 | `proofreader-apply-interactive` | 確認しながら置換 |
 | `proofreader-open-json` | JSON ファイルを開く |
 | `proofreader-cancel` | 実行中の処理をキャンセル |
+| `proofreader-select-model` | `agy models` の一覧からモデルを選んで保存 |
 
 ## カスタマイズ
 
 ```elisp
-;; Gemini モデルを変更
-(setq proofreader-gemini-model "gemini-2.5-flash")
+;; agy コマンド／モデルを変更（モデル名は `agy models` の表示名と一致させる）
+(setq proofreader-command "agy")
+(setq proofreader-model "Gemini 3.7 Flash (Medium)")
 
 ;; JSON ファイル名を変更
 (setq proofreader-json-filename "corrections.json")
@@ -64,6 +66,16 @@ Gemini CLI を使った日本語テキスト校正ワークフローを Emacs �
 ;; プロンプトをカスタマイズ
 (setq proofreader-prompt-template "...")
 ```
+
+### モデルが変わったとき
+
+agy 側で提供モデルの一覧は入れ替わる。指定したモデルが使えなくなった場合、
+proofreader は自動的に `agy models` を引いて同系列の最新モデル
+（例: `Gemini 3.5 Flash (Medium)` → `Gemini 3.7 Flash (Medium)`）に切り替え、
+そのまま再試行する。該当がなければモデル指定なしで再試行する。
+
+自動で選ばれたモデルはその Emacs セッション限りなので、恒久的に変えるには
+`M-x proofreader-select-model` で選び直す（Customize 経由で保存される）。
 
 ## JSON 形式
 

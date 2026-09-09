@@ -1,2 +1,3 @@
 # 状態・一時ファイル
 .DS_Store
+.zellij-send/

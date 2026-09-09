@@ -1,11 +1,14 @@
 # proofreader.el
 
-Gemini CLI を使った日本語テキスト校正ワークフローを Emacs で完結させるパッケージ。
+Antigravity CLI (`agy`) を使った日本語テキスト校正ワークフローを Emacs で完結させるパッケージ。
+
+旧 Gemini CLI は個人利用向けの提供が 2026-06-18 に終了したため、現在は後継の
+Antigravity CLI を Gemini AI Pro の OAuth ログイン経由で呼び出す。
 
 ## 必要環境
 
 - Emacs 27.1+
-- [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- Antigravity CLI (`agy` コマンドが `exec-path` から見えること)
 - Elpaca
 
 ## インストール
@@ -35,7 +38,7 @@ Gemini CLI を使った日本語テキスト校正ワークフローを Emacs �
 ### 基本ワークフロー
 
 1. **校正対象のバッファで** `M-x proofreader-send-buffer`
-   - バッファ全体を Gemini CLI に送信
+   - バッファ全体を agy に送信
    - 同ディレクトリに `replacements.json` を生成
 
 2. **校正対象のバッファで** `M-x proofreader-apply-interactive`

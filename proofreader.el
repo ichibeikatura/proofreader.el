@@ -1,7 +1,7 @@
 ;;; proofreader.el --- Proofreading workflow with Antigravity CLI (agy) -*- lexical-binding: t; -*-
 
 ;; Author: ichibeikatura
-;; URL: https://github.com/ichibeikatura/proofreader
+;; URL: https://github.com/ichibeikatura/proofreader.el
 ;; Version: 0.2.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: tools, writing, proofreading

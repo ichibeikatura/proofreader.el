@@ -116,6 +116,11 @@ JSONのみを出力してください。説明文や```json```マークダウン
 (defvar proofreader--retried nil
   "Non-nil once the current run has been retried with a fallback model.")
 
+(defvar proofreader--models-cache nil
+  "Models `agy models' last reported, or nil when it has not been asked yet.
+The command goes over the network and takes a couple of seconds, so the
+list is kept for the rest of the session; see `proofreader--list-models'.")
+
 (defun proofreader--get-json-path ()
   "Get path for replacements.json in current buffer's directory."
   (let ((dir (or (and buffer-file-name
@@ -151,8 +156,8 @@ agy may emit around the JSON.  Returns the JSON substring, or nil."
                (goto-char (1+ bracket))))))
         result))))
 
-(defun proofreader--list-models ()
-  "Return the models `agy models' reports, as an alist of (SLUG . DISPLAY).
+(defun proofreader--fetch-models ()
+  "Run `agy models' and return an alist of (SLUG . DISPLAY).
 Returns nil when the command fails or prints nothing usable."
   (with-temp-buffer
     (when (eq 0 (call-process proofreader-command nil (list t nil) nil "models"))
@@ -166,6 +171,14 @@ Returns nil when the command fails or prints nothing usable."
               (push (cons (match-string 1 line) (match-string 2 line)) models)))
           (forward-line 1))
         (nreverse models)))))
+
+(defun proofreader--list-models (&optional refresh)
+  "Return the models `agy models' reports, as an alist of (SLUG . DISPLAY).
+The list is cached for the session; with non-nil REFRESH, ask agy again.
+A failed lookup is not cached, so the next call retries."
+  (when (or refresh (null proofreader--models-cache))
+    (setq proofreader--models-cache (proofreader--fetch-models)))
+  proofreader--models-cache)
 
 (defun proofreader--model-parts (name)
   "Split model NAME into a list (WORDS VERSION LEVEL).
@@ -213,7 +226,8 @@ Switches to the closest model `agy models' offers, or drops --model
 altogether so agy uses its own default."
   (setq proofreader--retried t)
   (let* ((stale proofreader-model)
-         (models (proofreader--list-models))
+         ;; The cached list is what named the retired model, so ask agy again.
+         (models (proofreader--list-models t))
          (pick (and models (proofreader--pick-fallback-model stale models)))
          (prompt proofreader--prompt))
     ;; The sentinel runs in an arbitrary buffer; restore the source buffer so
@@ -399,18 +413,32 @@ keeps the process stdin open as a pipe, we must close it explicitly with
       (user-error "%s が見つかりません" json-path))))
 
 ;;;###autoload
-(defun proofreader-select-model ()
+(defun proofreader-select-model (&optional refresh)
   "Set `proofreader-model' by picking from what `agy models' reports.
-The choice is saved through Customize, so it survives restarts."
-  (interactive)
-  (let ((models (proofreader--list-models)))
+The current model is annotated in the list and is what empty input picks.
+After choosing you say whether to keep it for good, which saves it through
+Customize, or only for this Emacs session.
+The list is cached for the session; with a prefix argument REFRESH, ask agy
+for it again."
+  (interactive "P")
+  (let ((models (proofreader--list-models refresh)))
     (unless models
       (user-error "`%s models' からモデル一覧を取得できませんでした" proofreader-command))
-    (let ((choice (completing-read
-                   (format "モデル (現在: %s): " proofreader-model)
-                   (mapcar #'cdr models) nil t)))
-      (customize-save-variable 'proofreader-model choice)
-      (message "モデルを「%s」に設定し保存しました" choice))))
+    (let* ((current proofreader-model)
+           (completion-extra-properties
+            (list :annotation-function
+                  (lambda (name)
+                    (when (string-equal name current) "  ← 現在"))))
+           (choice (completing-read
+                    (format "モデル (現在: %s): " current)
+                    (mapcar #'cdr models) nil t nil nil current)))
+      (if (y-or-n-p (format "「%s」を既定として保存する？ (n ならこのセッションのみ) "
+                            choice))
+          (progn
+            (customize-save-variable 'proofreader-model choice)
+            (message "モデルを「%s」に設定し保存しました" choice))
+        (setq proofreader-model choice)
+        (message "モデルを「%s」に設定しました (このセッションのみ)" choice)))))
 
 ;;;###autoload
 (defun proofreader-cancel ()

@@ -23,6 +23,7 @@ Antigravity CLI を Gemini AI Pro の OAuth ログイン経由で呼び出す。
          ("C-c p i" . proofreader-apply-interactive)
          ("C-c p r" . proofreader-send-region)
          ("C-c p o" . proofreader-open-json)
+         ("C-c p m" . proofreader-select-model)
          ("C-c p a" . proofreader-apply)))
 ```
 
@@ -54,7 +55,7 @@ Antigravity CLI を Gemini AI Pro の OAuth ログイン経由で呼び出す。
 | `proofreader-apply-interactive` | 確認しながら置換 |
 | `proofreader-open-json` | JSON ファイルを開く |
 | `proofreader-cancel` | 実行中の処理をキャンセル |
-| `proofreader-select-model` | `agy models` の一覧からモデルを選んで保存 |
+| `proofreader-select-model` | `agy models` の一覧からモデルを選ぶ（`C-u` で一覧を再取得） |
 
 ## カスタマイズ
 
@@ -70,6 +71,16 @@ Antigravity CLI を Gemini AI Pro の OAuth ログイン経由で呼び出す。
 (setq proofreader-prompt-template "...")
 ```
 
+### モデルを切り替える
+
+`M-x proofreader-select-model`（上の例では `C-c p m`）で `agy models` の一覧から選ぶ。
+
+- 現在のモデルには一覧で `← 現在` が付き、空入力のままでも現在値が選ばれる。
+- 選んだあとに保存するか聞かれる。`y` なら Customize に書いて次回以降も有効、`n`
+  ならこの Emacs セッションのみ。
+- 一覧は取得に数秒かかるのでセッション内でキャッシュする。新しいモデルが出た直後
+  など取り直したいときは `C-u M-x proofreader-select-model`。
+
 ### モデルが変わったとき
 
 agy 側で提供モデルの一覧は入れ替わる。指定したモデルが使えなくなった場合、
@@ -78,7 +89,7 @@ proofreader は自動的に `agy models` を引いて同系列の最新モデル
 そのまま再試行する。該当がなければモデル指定なしで再試行する。
 
 自動で選ばれたモデルはその Emacs セッション限りなので、恒久的に変えるには
-`M-x proofreader-select-model` で選び直す（Customize 経由で保存される）。
+`M-x proofreader-select-model` で選び直して保存する。
 
 ## JSON 形式
 

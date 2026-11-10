@@ -18,7 +18,7 @@
 ;;   3. M-x proofreader-apply        - Apply replacements from JSON
 ;;
 ;; Configuration:
-;;   (setq proofreader-model "Gemini 3.7 Flash (Medium)")
+;;   M-x proofreader-select-model    ; pick a model and save the choice
 ;;   (setq proofreader-json-filename "replacements.json")
 ;;
 ;; Note: the former Gemini CLI was retired for individual use on 2026-06-18.
@@ -44,12 +44,41 @@ set this to an absolute path or fix `exec-path' (e.g. exec-path-from-shell)."
   :type 'string
   :group 'proofreader)
 
-(defcustom proofreader-model "Gemini 3.7 Flash (Medium)"
-  "Model to use with agy.
-This must match a name listed by `agy models' verbatim (including spaces
-and the parenthesized thinking level), since it is passed straight to
-`agy --model'."
-  :type 'string
+(defcustom proofreader-model nil
+  "Model to use with agy, or nil to leave the choice to the package.
+A string must match a name listed by `agy models' verbatim (including
+spaces and the parenthesized thinking level), since it is passed
+straight to `agy --model'.
+
+The default is nil on purpose: agy retires model names every few months,
+so any name hard-coded here would eventually be rejected.
+
+The model actually used is the first of these that is set:
+
+  1. the model picked in this session, by \\[proofreader-select-model]
+     or by the automatic fallback after agy rejected a model;
+  2. this variable, when your init file (or Customize) sets it;
+  3. the model saved in `proofreader-state-file' by
+     \\[proofreader-select-model];
+  4. none: agy is run without --model and uses its own default.
+
+So an explicit setting here beats the saved choice at every startup.
+Leave this nil if you want what \\[proofreader-select-model] saves to
+survive a restart; that command warns you when a setting here would
+override what it just saved."
+  :type '(choice (const :tag "Saved choice, else agy's default" nil)
+                 (string :tag "Model name"))
+  :group 'proofreader)
+
+(defcustom proofreader-state-file
+  (locate-user-emacs-file "proofreader-state.eld")
+  "File where \\[proofreader-select-model] saves the chosen model.
+It is the package's own state, independent of Customize and
+`custom-file', so the choice survives a restart however your init file
+treats `custom-file'.  The file is read each time the model is needed,
+so this may be set before or after the package is loaded.  Delete the
+file to forget the saved choice."
+  :type 'file
   :group 'proofreader)
 
 (defcustom proofreader-json-filename "replacements.json"
@@ -116,6 +145,11 @@ JSONのみを出力してください。説明文や```json```マークダウン
 (defvar proofreader--retried nil
   "Non-nil once the current run has been retried with a fallback model.")
 
+(defvar proofreader--session-model nil
+  "Model chosen during this Emacs session, or nil.
+Set by `proofreader-select-model' and by the automatic fallback; it
+takes precedence over `proofreader-model' and the saved choice.")
+
 (defvar proofreader--models-cache nil
   "Models `agy models' last reported, or nil when it has not been asked yet.
 The command goes over the network and takes a couple of seconds, so the
@@ -155,6 +189,51 @@ agy may emit around the JSON.  Returns the JSON substring, or nil."
                ;; Not valid JSON here; resume searching past this bracket.
                (goto-char (1+ bracket))))))
         result))))
+
+(defun proofreader--read-state ()
+  "Return the plist stored in `proofreader-state-file', or nil.
+A missing file is normal.  An unreadable one is reported and ignored."
+  (when (file-readable-p proofreader-state-file)
+    (condition-case err
+        (let ((state (with-temp-buffer
+                       (insert-file-contents proofreader-state-file)
+                       (read (current-buffer)))))
+          (and (listp state) state))
+      (error
+       (message "proofreader: %s を読めません (%s)"
+                proofreader-state-file (error-message-string err))
+       nil))))
+
+(defun proofreader--saved-model ()
+  "Return the model saved in `proofreader-state-file', or nil."
+  (let ((model (plist-get (proofreader--read-state) :model)))
+    (and (stringp model) (not (string-empty-p model)) model)))
+
+(defun proofreader--save-model (model)
+  "Save MODEL in `proofreader-state-file'.
+Signal an error unless the file reads back as MODEL, so a save that did
+not take is never reported as done."
+  (let ((dir (file-name-directory (expand-file-name proofreader-state-file)))
+        (state (plist-put (copy-sequence (proofreader--read-state))
+                          :model model)))
+    (make-directory dir t)
+    (with-temp-file proofreader-state-file
+      (let ((print-length nil)
+            (print-level nil))
+        (insert ";;; proofreader state -*- lisp-data -*-\n")
+        (prin1 state (current-buffer))
+        (insert "\n"))))
+  (unless (equal (proofreader--saved-model) model)
+    (error "%s に保存できませんでした" proofreader-state-file)))
+
+(defun proofreader--effective-model ()
+  "Return the model to pass to agy, or nil to let agy use its default.
+See `proofreader-model' for the order of precedence."
+  (or proofreader--session-model
+      (and (stringp proofreader-model)
+           (not (string-empty-p proofreader-model))
+           proofreader-model)
+      (proofreader--saved-model)))
 
 (defun proofreader--fetch-models ()
   "Run `agy models' and return an alist of (SLUG . DISPLAY).
@@ -221,11 +300,11 @@ wins first, then the highest version number."
       best)))
 
 (defun proofreader--retry-with-fallback ()
-  "Re-run the current prompt after agy rejected `proofreader-model'.
+  "Re-run the current prompt after agy rejected the model in use.
 Switches to the closest model `agy models' offers, or drops --model
 altogether so agy uses its own default."
   (setq proofreader--retried t)
-  (let* ((stale proofreader-model)
+  (let* ((stale (proofreader--effective-model))
          ;; The cached list is what named the retired model, so ask agy again.
          (models (proofreader--list-models t))
          (pick (and models (proofreader--pick-fallback-model stale models)))
@@ -237,9 +316,9 @@ altogether so agy uses its own default."
                            (current-buffer))
       (cond
        (pick
-        (setq proofreader-model (cdr pick))
+        (setq proofreader--session-model (cdr pick))
         (message "モデル「%s」は使えません。「%s」で再試行します (この設定は今回のみ。M-x proofreader-select-model で保存できます)"
-                 stale proofreader-model)
+                 stale proofreader--session-model)
         (proofreader--start prompt))
        (t
         (message "モデル「%s」は使えません。モデル指定なしで再試行します (M-x proofreader-select-model で選び直せます)"
@@ -290,7 +369,8 @@ leaves stdout empty, so show stderr when there is anything there."
 
 (defun proofreader--start (prompt &optional no-model)
   "Start the agy process with PROMPT, capturing stdout for JSON extraction.
-With NO-MODEL non-nil, omit --model so agy falls back to its own default.
+With NO-MODEL non-nil, or when no model is configured, omit --model so agy
+falls back to its own default.
 PROMPT is passed as a command-line argument, but agy still waits for stdin to
 reach EOF before it prints and exits, even in print (-p) mode.  Since Emacs
 keeps the process stdin open as a pipe, we must close it explicitly with
@@ -308,17 +388,17 @@ keeps the process stdin open as a pipe, we must close it explicitly with
   (with-current-buffer proofreader--stderr-buffer
     (erase-buffer))
   (message "agy に送信中...")
-  (setq proofreader--process
-        (make-process
-         :name "proofreader"
-         :buffer proofreader--output-buffer
-         :stderr proofreader--stderr-buffer
-         :command (append (list proofreader-command)
-                          (unless no-model
-                            (list "--model" proofreader-model))
-                          (list "-p" prompt))
-         :connection-type 'pipe
-         :sentinel #'proofreader--process-sentinel))
+  (let ((model (and (not no-model) (proofreader--effective-model))))
+    (setq proofreader--process
+          (make-process
+           :name "proofreader"
+           :buffer proofreader--output-buffer
+           :stderr proofreader--stderr-buffer
+           :command (append (list proofreader-command)
+                            (when model (list "--model" model))
+                            (list "-p" prompt))
+           :connection-type 'pipe
+           :sentinel #'proofreader--process-sentinel)))
   ;; agy waits for stdin EOF before printing; close it so it doesn't hang.
   (process-send-eof proofreader--process))
 
@@ -414,30 +494,44 @@ keeps the process stdin open as a pipe, we must close it explicitly with
 
 ;;;###autoload
 (defun proofreader-select-model (&optional refresh)
-  "Set `proofreader-model' by picking from what `agy models' reports.
+  "Pick the model to use from what `agy models' reports.
 The current model is annotated in the list and is what empty input picks.
-After choosing you say whether to keep it for good, which saves it through
-Customize, or only for this Emacs session.
+After choosing you say whether to keep it for good, which writes it to
+`proofreader-state-file', or only for this Emacs session.  Either way the
+choice takes effect at once.
+
+A saved choice is read back in later sessions unless `proofreader-model'
+is set explicitly, which takes precedence; this command says so when
+that is the case.
+
 The list is cached for the session; with a prefix argument REFRESH, ask agy
 for it again."
   (interactive "P")
   (let ((models (proofreader--list-models refresh)))
     (unless models
       (user-error "`%s models' からモデル一覧を取得できませんでした" proofreader-command))
-    (let* ((current proofreader-model)
+    (let* ((current (proofreader--effective-model))
            (completion-extra-properties
             (list :annotation-function
                   (lambda (name)
-                    (when (string-equal name current) "  ← 現在"))))
+                    (when (equal name current) "  ← 現在"))))
            (choice (completing-read
-                    (format "モデル (現在: %s): " current)
+                    (format "モデル (現在: %s): " (or current "agy の既定"))
                     (mapcar #'cdr models) nil t nil nil current)))
       (if (y-or-n-p (format "「%s」を既定として保存する？ (n ならこのセッションのみ) "
                             choice))
           (progn
-            (customize-save-variable 'proofreader-model choice)
-            (message "モデルを「%s」に設定し保存しました" choice))
-        (setq proofreader-model choice)
+            (proofreader--save-model choice)
+            (setq proofreader--session-model choice)
+            (if (and (stringp proofreader-model)
+                     (not (string-empty-p proofreader-model))
+                     (not (string-equal proofreader-model choice)))
+                (message "モデルを「%s」に設定し %s に保存しました。ただし proofreader-model に「%s」が明示されているため、再起動後はそちらが優先されます (init の設定を外すと保存値が使われます)"
+                         choice (abbreviate-file-name proofreader-state-file)
+                         proofreader-model)
+              (message "モデルを「%s」に設定し %s に保存しました"
+                       choice (abbreviate-file-name proofreader-state-file))))
+        (setq proofreader--session-model choice)
         (message "モデルを「%s」に設定しました (このセッションのみ)" choice)))))
 
 ;;;###autoload

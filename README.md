@@ -60,9 +60,15 @@ Antigravity CLI を Gemini AI Pro の OAuth ログイン経由で呼び出す。
 ## カスタマイズ
 
 ```elisp
-;; agy コマンド／モデルを変更（モデル名は `agy models` の表示名と一致させる）
+;; agy コマンドを変更
 (setq proofreader-command "agy")
-(setq proofreader-model "Gemini 3.7 Flash (Medium)")
+
+;; 選んだモデルの保存先（既定は user-emacs-directory 直下の proofreader-state.eld）
+(setq proofreader-state-file
+      (expand-file-name "proofreader-state.eld" no-littering-var-directory))
+
+;; モデルを init で固定したい場合のみ（通常は不要。下の「優先順位」を参照）
+;; (setq proofreader-model "<agy models の表示名>")
 
 ;; JSON ファイル名を変更
 (setq proofreader-json-filename "corrections.json")
@@ -76,10 +82,25 @@ Antigravity CLI を Gemini AI Pro の OAuth ログイン経由で呼び出す。
 `M-x proofreader-select-model`（上の例では `C-c p m`）で `agy models` の一覧から選ぶ。
 
 - 現在のモデルには一覧で `← 現在` が付き、空入力のままでも現在値が選ばれる。
-- 選んだあとに保存するか聞かれる。`y` なら Customize に書いて次回以降も有効、`n`
-  ならこの Emacs セッションのみ。
+- 選んだあとに保存するか聞かれる。`y` なら `proofreader-state-file` に書いて次回
+  以降も有効、`n` ならこの Emacs セッションのみ。保存は Customize / `custom-file`
+  を使わないので、`custom-file` を読み込まない設定でも再起動後に残る。
 - 一覧は取得に数秒かかるのでセッション内でキャッシュする。新しいモデルが出た直後
   など取り直したいときは `C-u M-x proofreader-select-model`。
+
+### モデルの優先順位
+
+実際に使われるモデルは、次のうち最初に値があるもの。
+
+1. このセッションで選んだモデル（`proofreader-select-model`、または自動フォールバック）
+2. init や Customize で明示した `proofreader-model`
+3. `proofreader-state-file` に保存したモデル
+4. なし（`--model` を付けずに実行し、agy 自身の既定に任せる）
+
+`proofreader-model` の既定値は `nil`。agy のモデル名は数か月で入れ替わるため、
+パッケージ側に特定の名前を持たせていない。init で `proofreader-model` を明示して
+いると起動のたびにそれが保存値より優先されるので、`proofreader-select-model` の
+保存を効かせたいときは init の設定を外す（保存時にその旨の警告が出る）。
 
 ### モデルが変わったとき
 
